@@ -1,0 +1,8 @@
+# Voice recognition requirements
+
+pygame==2.6.1
+numpy
+azure-cognitiveservices-speech==1.49.0
+pyaudio
+pvporcupine==4.0.2
+pyusb==1.3.1

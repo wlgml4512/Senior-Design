@@ -1,0 +1,122 @@
+================================================================================
+ATLAS Voice Control — Sample Output Reference
+================================================================================
+Subsystem:   Voice Control (voice-recognition/)
+Developer:   Joey D'Alessandro
+Last Updated: 2026-04-01
+================================================================================
+
+OVERVIEW
+--------
+When a voice command is recognized, the Voice Control subsystem appends a single
+JSON line to one of two files depending on the target subsystem:
+
+    Navigation → voice-recognition/commands.jsonl
+    Embedded   → voice-recognition/embedded-commands.jsonl
+
+Navigation (fusion/main.py) tails commands.jsonl continuously. The embedded
+controller process tails embedded-commands.jsonl and dispatches to the Motor
+and HX711 drivers via lgpio. Both processes run on the same Raspberry Pi —
+there is no separate MCU or serial link.
+
+Each message is written atomically (fsync'd) and is self-contained — no prior
+state is needed to interpret it.
+
+
+MESSAGE SCHEMA
+--------------
+Field        Type     Description
+-----------  -------  -----------------------------------------------------------
+timestamp    float    Unix epoch seconds (UTC) at time of command dispatch
+source       string   Always "voice_control"
+subsystem    string   Target subsystem: "navigation" or "embedded"
+action       string   Command action (see Command Reference below)
+params       object   Additional parameters — currently always {} (reserved for
+                      future use, e.g. speed targets, priority flags)
+command_id   string   UUID v4 — unique per message; use for deduplication or ACK
+
+
+COMMAND REFERENCE
+-----------------
+Voice phrase    → subsystem    action
+--------------    -----------  ---------------
+"follow"        → navigation   follow
+"slow down"     → navigation   reduce_speed
+"speed up"      → navigation   increase_speed
+"stop"          → embedded     emergency_stop
+"resume"        → embedded     resume
+
+Note: The parser uses fuzzy matching (≥0.75 confidence threshold), so natural
+variations like "follow me" or "please stop" will also trigger these actions.
+
+
+SAMPLE MESSAGES — commands.jsonl (navigation)
+---------------------------------------------
+{"timestamp": 1775072781.947628, "source": "voice_control", "subsystem": "navigation", "action": "follow", "params": {}, "command_id": "4c3baac5-47b4-4cd7-ab60-11ef39231476"}
+{"timestamp": 1775073293.280141, "source": "voice_control", "subsystem": "navigation", "action": "reduce_speed", "params": {}, "command_id": "77927609-eaf7-4f74-aeb2-2b2a5839f0a3"}
+{"timestamp": 1775073304.237247, "source": "voice_control", "subsystem": "navigation", "action": "increase_speed", "params": {}, "command_id": "66a19f96-2e88-4caa-8dd0-8e9b2ff28ec8"}
+
+SAMPLE MESSAGES — embedded-commands.jsonl (embedded)
+-----------------------------------------------------
+{"timestamp": 1775072797.612861, "source": "voice_control", "subsystem": "embedded", "action": "emergency_stop", "params": {}, "command_id": "6df6ac84-68fd-4a3c-ae56-405ab290c1dd"}
+{"timestamp": 1775073309.213266, "source": "voice_control", "subsystem": "embedded", "action": "resume", "params": {}, "command_id": "f3273fd7-55f9-4dfe-a38c-40bc58bf798c"}
+
+
+PRETTY-PRINTED EXAMPLE (for readability — actual files use compact one-liners)
+-------------------------------------------------------------------------------
+{
+    "timestamp": 1775072781.947628,
+    "source": "voice_control",
+    "subsystem": "navigation",
+    "action": "follow",
+    "params": {},
+    "command_id": "4c3baac5-47b4-4cd7-ab60-11ef39231476"
+}
+
+
+INTEGRATION NOTES FOR NAVIGATION TEAM
+--------------------------------------
+- File path:   voice-recognition/commands.jsonl  (relative to project root)
+- Format:      JSONL — one JSON object per line, newline-terminated
+- Delivery:    Appended by voice control; fusion should tail the file and process
+               each new line as it arrives
+- Concurrency: Voice control holds a threading.Lock during each write and calls
+               fsync(), so each line is complete and flushed before fusion reads it
+- Ordering:    Lines are strictly chronological (timestamp increases monotonically)
+- Dedup:       Use command_id (UUID) if you need to guard against double-processing
+- Subsystem filter: Filter on the "subsystem" field — navigation should only act
+               on lines where subsystem == "navigation"
+
+
+INTEGRATION NOTES FOR EMBEDDED TEAM (Joseph)
+---------------------------------------------
+- File path:   voice-recognition/embedded-commands.jsonl  (relative to project root)
+- Format:      JSONL — one JSON object per line, newline-terminated (same as navigation)
+- Architecture: No serial link. Both voice control and the embedded controller run
+               as separate processes on the same Raspberry Pi via lgpio. Voice control
+               writes to the file; embedded controller tails and reads it.
+- Delivery:    Appended by voice control; embedded controller should tail the file
+               and process each new line as it arrives
+- Concurrency: Same threading.Lock + fsync() guarantees as the navigation file
+- Expected commands:
+     action == "emergency_stop"  →  call motor.stop()   on the Motor instance
+     action == "resume"          →  call motor.set_speed(previous_speed)
+- Emergency stop: motor.stop() sets speed to 0 immediately in the PWM thread.
+               File-based IPC latency (~1ms on local disk) is sufficient — no
+               dedicated GPIO pin or separate channel needed.
+- Dedup:       Use command_id (UUID) if you need to guard against double-processing
+
+
+TYPICAL COMMAND SEQUENCE (real session excerpt from commands.jsonl)
+--------------------------------------------------------------------
+1. User says "follow"      → navigation / follow
+2. User says "speed up"    → navigation / increase_speed
+3. User says "slow down"   → navigation / reduce_speed
+4. User says "stop"        → embedded  / emergency_stop
+5. User says "resume"      → embedded  / resume
+6. User says "follow"      → navigation / follow
+
+
+================================================================================
+End of document
+================================================================================
